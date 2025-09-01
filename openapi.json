@@ -1,20 +1,26 @@
 {
-  "openapi": "3.1.0",
+  "openapi": "3.0.1",
   "info": { "title": "My WHOOP Proxy", "version": "1.0.0" },
-  "servers": [{ "url": "https://whoop-proxy.onrender.com" }],
+  "servers": [
+    { "url": "https://whoop-proxy.onrender.com/" }
+  ],
   "paths": {
     "/me/summary": {
       "get": {
         "operationId": "getSummary",
         "description": "30-day summary of profile, body, cycles, recovery, sleep.",
-        "responses": { "200": { "description": "OK" } }
+        "responses": {
+          "200": { "description": "OK" }
+        }
       }
     },
     "/today/recovery": {
       "get": {
         "operationId": "getTodayRecovery",
         "description": "Latest recovery snapshot for today.",
-        "responses": { "200": { "description": "OK" } }
+        "responses": {
+          "200": { "description": "OK" }
+        }
       }
     }
   }
