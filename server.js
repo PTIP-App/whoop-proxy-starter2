@@ -1,21 +1,14 @@
-// server.js — WHOOP proxy (beginner-friendly, single-user)
-// Works with: Node 18+, Express 4, node-fetch 3, express-session
+// server.js — WHOOP proxy (single user, beginner-friendly)
+// Node 18+ (ESM). Express + node-fetch + express-session.
 
 import express from "express";
 import fetch from "node-fetch";
 import session from "express-session";
-import path from "path";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // ───────────────────────────────────────────────────────────────────────────────
 // ENV (Render → Settings → Environment Variables)
-// Make sure WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET, SESSION_SECRET are set in Render.
-// BASE_URL should be your public URL (no trailing slash), e.g.
-//   https://whoop-proxy.onrender.com
-// We'll default to your chosen domain to keep things simple.
+// Required: WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET, SESSION_SECRET
+// Recommended: BASE_URL = https://whoop-proxy.onrender.com  (no trailing slash)
 const {
   WHOOP_CLIENT_ID,
   WHOOP_CLIENT_SECRET,
@@ -24,26 +17,29 @@ const {
 } = process.env;
 
 if (!WHOOP_CLIENT_ID || !WHOOP_CLIENT_SECRET) {
-  console.warn("⚠️ Missing WHOOP_CLIENT_ID or WHOOP_CLIENT_SECRET env vars.");
+  console.warn("⚠️ Missing WHOOP_CLIENT_ID or WHOOP_CLIENT_SECRET.");
 }
 
 // WHOOP OAuth + API endpoints (v2)
 const WHOOP_AUTH = "https://api.prod.whoop.com/oauth/oauth2/auth";
 const WHOOP_TOKEN = "https://api.prod.whoop.com/oauth/oauth2/token";
 
-// Single-user token storage fallback (so GPT calls work without browser cookies).
-// NOTE: Tokens will be lost if the service restarts. If you want persistence,
-// later we can add Redis; for now this keeps things simple.
+// Single-user token fallback (so GPT calls work without cookies).
+// NOTE: tokens reset on restart (okay for starter). For persistence, add Redis later.
 let globalTokens = null;
 
 // ───────────────────────────────────────────────────────────────────────────────
 // App setup
 const app = express();
 app.use(express.json());
+
+// Tiny request logger so you can see what the GPT is calling in Render → Logs
 app.use((req, _res, next) => {
   console.log("REQ", req.method, req.url);
   next();
 });
+
+// Sessions (used only for OAuth state + optional session token copy)
 app.use(
   session({
     secret: SESSION_SECRET,
@@ -51,16 +47,27 @@ app.use(
     saveUninitialized: true
   })
 );
-app.use("/public", express.static(path.join(__dirname, "public")));
 
-// Simple home page with a connect button
+// Simple homepage (no static files needed)
 app.get("/", (_req, res) => {
-  res.sendFile(path.join(__dirname, "public/index.html"));
+  res
+    .type("html")
+    .send(
+      `<h1>WHOOP Proxy</h1>
+       <p><a href="/connect/whoop">Connect to WHOOP</a></p>
+       <p><a href="/openapi.json">/openapi.json</a></p>`
+    );
 });
 
-// Serve your OpenAPI file for GPT Actions
+// Serve OpenAPI (make sure openapi.json exists in repo root)
 app.get("/openapi.json", (_req, res) => {
-  res.sendFile(path.join(__dirname, "openapi.json"));
+  // sendFile without __dirname (no ESM path fuss): stream from FS via dynamic import
+  import("node:fs").then(fs => {
+    fs.readFile("openapi.json", "utf8", (err, text) => {
+      if (err) return res.status(404).send("openapi.json not found");
+      res.type("application/json").send(text);
+    });
+  });
 });
 
 // ───────────────────────────────────────────────────────────────────────────────
@@ -88,9 +95,7 @@ app.get("/oauth/callback", async (req, res) => {
     const { code, state } = req.query;
 
     if (!code) return res.status(400).send("Missing code");
-    if (state !== req.session.oauth_state) {
-      return res.status(400).send("Bad state");
-    }
+    if (state !== req.session.oauth_state) return res.status(400).send("Bad state");
 
     const body = new URLSearchParams({
       grant_type: "authorization_code",
@@ -105,11 +110,10 @@ app.get("/oauth/callback", async (req, res) => {
       const text = await r.text();
       return res.status(500).send(`Token exchange failed: ${r.status} ${text}`);
     }
-    const tokens = await r.json(); // { access_token, refresh_token, expires_in, ... }
+    const tokens = await r.json(); // { access_token, refresh_token, ... }
 
-    // Save to session (for browser) and to global (for GPT/server-to-server)
     req.session.tokens = tokens;
-    globalTokens = tokens;
+    globalTokens = tokens; // fallback for GPT/server calls
 
     res.send("✅ WHOOP connected. You can close this tab.");
   } catch (err) {
@@ -134,9 +138,9 @@ async function refreshTokens(tokens) {
   return r.json();
 }
 
-// Fetch a WHOOP URL with auth, handle a single refresh on 401
+// Fetch a WHOOP URL with auth; on 401, refresh once
 async function whoopGet(req, url) {
-  // Prefer session tokens, fallback to global
+  // prefer session tokens, fallback to global
   let tokens = req.session?.tokens || globalTokens;
   if (!tokens?.access_token) {
     throw new Error("Not connected to WHOOP yet. Visit /connect/whoop");
@@ -147,10 +151,8 @@ async function whoopGet(req, url) {
 
   let r = await doFetch(tokens.access_token);
 
-  // If unauthorized, try refreshing once
   if (r.status === 401) {
     const newTokens = await refreshTokens(tokens);
-    // Save back into both places
     if (req.session) req.session.tokens = newTokens;
     globalTokens = newTokens;
     r = await doFetch(newTokens.access_token);
@@ -164,7 +166,46 @@ async function whoopGet(req, url) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────────
-// Small JSON helpers (keep GPT payloads tiny)
+// Date normalizers (DURABLE FIX): accept YYYY, YYYY-MM, YYYY-MM-DD, or full ISO.
+
+function normalizeStartISO(s) {
+  if (!s) return s;
+  // YYYY
+  if (/^\d{4}$/.test(s)) return `${s}-01-01T00:00:00.000Z`;
+  // YYYY-MM
+  if (/^\d{4}-\d{2}$/.test(s)) return `${s}-01T00:00:00.000Z`;
+  // YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T00:00:00.000Z`;
+  // Otherwise try Date parse
+  const d = new Date(s);
+  if (isNaN(d)) throw new Error("Invalid start date");
+  return d.toISOString();
+}
+
+function normalizeEndISO(s) {
+  if (!s) return s;
+  // YYYY → end of that year
+  if (/^\d{4}$/.test(s)) {
+    const y = Number(s);
+    const next = new Date(Date.UTC(y + 1, 0, 1));
+    return new Date(next.getTime() - 1).toISOString();
+  }
+  // YYYY-MM → end of that month
+  if (/^\d{4}-\d{2}$/.test(s)) {
+    const [y, m] = s.split("-").map(Number); // m is 1-12
+    const next = new Date(Date.UTC(y, m, 1)); // next month (month is 0-based)
+    return new Date(next.getTime() - 1).toISOString();
+  }
+  // YYYY-MM-DD → end of that day
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T23:59:59.999Z`;
+  // Otherwise try Date parse
+  const d = new Date(s);
+  if (isNaN(d)) throw new Error("Invalid end date");
+  return d.toISOString();
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Small JSON helpers
 
 function rangeUrl(base, { start, end, limit, nextToken }) {
   const p = new URLSearchParams();
@@ -182,9 +223,9 @@ function trimRecord(rec) {
     "id",
     "start",
     "end",
+    "date",
     "createdAt",
     "updatedAt",
-    "date",
     "score",
     "sleep_score",
     "recovery_score",
@@ -219,11 +260,10 @@ async function fetchPage(req, base, args) {
 // ───────────────────────────────────────────────────────────────────────────────
 // Convenience routes
 
-// Tiny today endpoint (fast to test)
 app.get("/today/recovery", async (req, res) => {
   try {
-    const start = new Date(); start.setHours(0, 0, 0, 0);
-    const end = new Date(); end.setHours(23, 59, 59, 999);
+    const start = new Date(); start.setUTCHours(0, 0, 0, 0);
+    const end = new Date(); end.setUTCHours(23, 59, 59, 999);
     const url = rangeUrl("https://api.prod.whoop.com/developer/v2/recovery", {
       start: start.toISOString(),
       end: end.toISOString(),
@@ -236,7 +276,7 @@ app.get("/today/recovery", async (req, res) => {
   }
 });
 
-// 30-day convenience bundle (can be large; prefer /list/* in GPT)
+// 30-day bundle (can be large; prefer /list/* for GPT)
 app.get("/me/summary", async (req, res) => {
   try {
     const now = new Date().toISOString();
@@ -255,15 +295,17 @@ app.get("/me/summary", async (req, res) => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────────
-// Small, paginated list endpoints (best for GPT). Provide start & end (ISO).
+// Paginated list endpoints — now accept simple dates (YYYY / YYYY-MM / YYYY-MM-DD)
 // Use limit (default 50) and nextToken to paginate. trim=true keeps payloads tiny.
 
 app.get("/list/recovery", async (req, res) => {
   try {
     const { start, end, limit = 50, nextToken, trim = "true" } = req.query;
-    if (!start || !end) return res.status(400).json({ error: "Provide start & end (ISO datetimes)" });
+    if (!start || !end) return res.status(400).json({ error: "Provide start & end (dates or ISO datetimes)" });
+    const startISO = normalizeStartISO(start);
+    const endISO = normalizeEndISO(end);
     const base = "https://api.prod.whoop.com/developer/v2/recovery";
-    const page = await fetchPage(req, base, { start, end, limit, nextToken });
+    const page = await fetchPage(req, base, { start: startISO, end: endISO, limit, nextToken });
     page.records = maybeTrim(page.records, trim === "true");
     res.json(page);
   } catch (e) {
@@ -274,9 +316,11 @@ app.get("/list/recovery", async (req, res) => {
 app.get("/list/sleep", async (req, res) => {
   try {
     const { start, end, limit = 50, nextToken, trim = "true" } = req.query;
-    if (!start || !end) return res.status(400).json({ error: "Provide start & end (ISO datetimes)" });
+    if (!start || !end) return res.status(400).json({ error: "Provide start & end (dates or ISO datetimes)" });
+    const startISO = normalizeStartISO(start);
+    const endISO = normalizeEndISO(end);
     const base = "https://api.prod.whoop.com/developer/v2/activity/sleep";
-    const page = await fetchPage(req, base, { start, end, limit, nextToken });
+    const page = await fetchPage(req, base, { start: startISO, end: endISO, limit, nextToken });
     page.records = maybeTrim(page.records, trim === "true");
     res.json(page);
   } catch (e) {
@@ -287,9 +331,11 @@ app.get("/list/sleep", async (req, res) => {
 app.get("/list/workout", async (req, res) => {
   try {
     const { start, end, limit = 50, nextToken, trim = "true" } = req.query;
-    if (!start || !end) return res.status(400).json({ error: "Provide start & end (ISO datetimes)" });
+    if (!start || !end) return res.status(400).json({ error: "Provide start & end (dates or ISO datetimes)" });
+    const startISO = normalizeStartISO(start);
+    const endISO = normalizeEndISO(end);
     const base = "https://api.prod.whoop.com/developer/v2/activity/workout";
-    const page = await fetchPage(req, base, { start, end, limit, nextToken });
+    const page = await fetchPage(req, base, { start: startISO, end: endISO, limit, nextToken });
     page.records = maybeTrim(page.records, trim === "true");
     res.json(page);
   } catch (e) {
@@ -300,9 +346,11 @@ app.get("/list/workout", async (req, res) => {
 app.get("/list/cycle", async (req, res) => {
   try {
     const { start, end, limit = 50, nextToken, trim = "true" } = req.query;
-    if (!start || !end) return res.status(400).json({ error: "Provide start & end (ISO datetimes)" });
+    if (!start || !end) return res.status(400).json({ error: "Provide start & end (dates or ISO datetimes)" });
+    const startISO = normalizeStartISO(start);
+    const endISO = normalizeEndISO(end);
     const base = "https://api.prod.whoop.com/developer/v2/cycle";
-    const page = await fetchPage(req, base, { start, end, limit, nextToken });
+    const page = await fetchPage(req, base, { start: startISO, end: endISO, limit, nextToken });
     page.records = maybeTrim(page.records, trim === "true");
     res.json(page);
   } catch (e) {
@@ -310,23 +358,35 @@ app.get("/list/cycle", async (req, res) => {
   }
 });
 
-// Basic profile + body measurement (usually small)
-app.get("/profile/basic", async (req, res) => {
+// Profile + body (small)
+app.get("/profile/basic", async (_req, res) => {
   try {
-    const data = await whoopGet(req, "https://api.prod.whoop.com/developer/v2/user/profile/basic");
+    const data = await whoopGet(_req, "https://api.prod.whoop.com/developer/v2/user/profile/basic");
     res.json(data);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-app.get("/measurement/body", async (req, res) => {
+app.get("/measurement/body", async (_req, res) => {
   try {
-    const data = await whoopGet(req, "https://api.prod.whoop.com/developer/v2/user/measurement/body");
+    const data = await whoopGet(_req, "https://api.prod.whoop.com/developer/v2/user/measurement/body");
     res.json(data);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// Optional: list available routes for debugging
+app.get("/__debug/routes", (_req, res) => {
+  const routes = [];
+  app._router.stack.forEach(mw => {
+    if (mw.route && mw.route.path) {
+      const methods = Object.keys(mw.route.methods).join(",").toUpperCase();
+      routes.push(`${methods} ${mw.route.path}`);
+    }
+  });
+  res.json({ routes });
 });
 
 // ───────────────────────────────────────────────────────────────────────────────
