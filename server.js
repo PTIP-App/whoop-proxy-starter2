@@ -4,6 +4,26 @@ import fetch from "node-fetch";
 import session from "express-session";
 import path from "path";
 import { fileURLToPath } from "url";
+import Redis from "ioredis";
+
+const { REDIS_URL } = process.env;
+const redis = REDIS_URL ? new Redis(REDIS_URL) : null;
+
+async function saveTokens(tokens) {
+  if (redis) {
+    await redis.set("whoop_tokens", JSON.stringify(tokens));
+  } else {
+    globalTokens = tokens; // fallback if no Redis configured
+  }
+}
+
+async function loadTokens() {
+  if (redis) {
+    const s = await redis.get("whoop_tokens");
+    return s ? JSON.parse(s) : null;
+  }
+  return globalTokens;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
