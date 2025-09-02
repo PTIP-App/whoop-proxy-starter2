@@ -1,6 +1,6 @@
 {
   "openapi": "3.1.1",
-  "info": { "title": "My WHOOP Proxy", "version": "2.0.2" },
+  "info": { "title": "My WHOOP Proxy", "version": "2.0.3" },
   "servers": [{ "url": "https://whoop-proxy.onrender.com" }],
   "paths": {
     "/today/recovery": {
@@ -12,7 +12,18 @@
             "description": "OK",
             "content": {
               "application/json": {
-                "schema": { "type": "object", "properties": {}, "additionalProperties": true }
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "records": {
+                      "type": "array",
+                      "items": { "type": "object", "additionalProperties": true }
+                    },
+                    "nextToken": { "type": ["string", "null"] }
+                  },
+                  "required": ["records"]
+                }
               }
             }
           }
@@ -28,7 +39,51 @@
             "description": "OK",
             "content": {
               "application/json": {
-                "schema": { "type": "object", "properties": {}, "additionalProperties": true }
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "profile": { "type": "object", "additionalProperties": true },
+                    "body": { "type": "object", "additionalProperties": true },
+                    "cycles": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "records": {
+                          "type": "array",
+                          "items": { "type": "object", "additionalProperties": true }
+                        },
+                        "nextToken": { "type": ["string", "null"] }
+                      },
+                      "required": ["records"]
+                    },
+                    "recovery": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "records": {
+                          "type": "array",
+                          "items": { "type": "object", "additionalProperties": true }
+                        },
+                        "nextToken": { "type": ["string", "null"] }
+                      },
+                      "required": ["records"]
+                    },
+                    "sleep": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "records": {
+                          "type": "array",
+                          "items": { "type": "object", "additionalProperties": true }
+                        },
+                        "nextToken": { "type": ["string", "null"] }
+                      },
+                      "required": ["records"]
+                    }
+                  },
+                  "required": ["profile", "body", "cycles", "recovery", "sleep"]
+                }
               }
             }
           }
@@ -44,7 +99,16 @@
             "description": "OK",
             "content": {
               "application/json": {
-                "schema": { "type": "object", "properties": {}, "additionalProperties": true }
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "userId": { "type": "string" },
+                    "firstName": { "type": ["string", "null"] },
+                    "lastName": { "type": ["string", "null"] },
+                    "email": { "type": ["string", "null"], "format": "email" }
+                  }
+                }
               }
             }
           }
@@ -60,7 +124,15 @@
             "description": "OK",
             "content": {
               "application/json": {
-                "schema": { "type": "object", "properties": {}, "additionalProperties": true }
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "height_cm": { "type": ["number", "null"] },
+                    "weight_kg": { "type": ["number", "null"] },
+                    "body_fat_pct": { "type": ["number", "null"] }
+                  }
+                }
               }
             }
           }
@@ -76,7 +148,7 @@
           { "name": "end", "in": "query", "required": true, "schema": { "type": "string", "format": "date-time" } },
           { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } },
           { "name": "nextToken", "in": "query", "required": false, "schema": { "type": "string" } },
-          { "name": "trim", "in": "query", "required": false, "schema": { "type": "string", "enum": ["true","false"], "default": "true" } }
+          { "name": "trim", "in": "query", "required": false, "schema": { "type": "string", "enum": ["true", "false"], "default": "true" } }
         ],
         "responses": {
           "200": {
@@ -89,9 +161,9 @@
                   "properties": {
                     "records": {
                       "type": "array",
-                      "items": { "type": "object", "properties": {}, "additionalProperties": true }
+                      "items": { "type": "object", "additionalProperties": true }
                     },
-                    "nextToken": { "type": ["string","null"] }
+                    "nextToken": { "type": ["string", "null"] }
                   },
                   "required": ["records"]
                 }
@@ -110,7 +182,7 @@
           { "name": "end", "in": "query", "required": true, "schema": { "type": "string", "format": "date-time" } },
           { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } },
           { "name": "nextToken", "in": "query", "required": false, "schema": { "type": "string" } },
-          { "name": "trim", "in": "query", "required": false, "schema": { "type": "string", "enum": ["true","false"], "default": "true" } }
+          { "name": "trim", "in": "query", "required": false, "schema": { "type": "string", "enum": ["true", "false"], "default": "true" } }
         ],
         "responses": {
           "200": {
@@ -123,9 +195,9 @@
                   "properties": {
                     "records": {
                       "type": "array",
-                      "items": { "type": "object", "properties": {}, "additionalProperties": true }
+                      "items": { "type": "object", "additionalProperties": true }
                     },
-                    "nextToken": { "type": ["string","null"] }
+                    "nextToken": { "type": ["string", "null"] }
                   },
                   "required": ["records"]
                 }
@@ -144,7 +216,7 @@
           { "name": "end", "in": "query", "required": true, "schema": { "type": "string", "format": "date-time" } },
           { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } },
           { "name": "nextToken", "in": "query", "required": false, "schema": { "type": "string" } },
-          { "name": "trim", "in": "query", "required": false, "schema": { "type": "string", "enum": ["true","false"], "default": "true" } }
+          { "name": "trim", "in": "query", "required": false, "schema": { "type": "string", "enum": ["true", "false"], "default": "true" } }
         ],
         "responses": {
           "200": {
@@ -157,9 +229,9 @@
                   "properties": {
                     "records": {
                       "type": "array",
-                      "items": { "type": "object", "properties": {}, "additionalProperties": true }
+                      "items": { "type": "object", "additionalProperties": true }
                     },
-                    "nextToken": { "type": ["string","null"] }
+                    "nextToken": { "type": ["string", "null"] }
                   },
                   "required": ["records"]
                 }
@@ -178,7 +250,7 @@
           { "name": "end", "in": "query", "required": true, "schema": { "type": "string", "format": "date-time" } },
           { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } },
           { "name": "nextToken", "in": "query", "required": false, "schema": { "type": "string" } },
-          { "name": "trim", "in": "query", "required": false, "schema": { "type": "string", "enum": ["true","false"], "default": "true" } }
+          { "name": "trim", "in": "query", "required": false, "schema": { "type": "string", "enum": ["true", "false"], "default": "true" } }
         ],
         "responses": {
           "200": {
@@ -191,9 +263,9 @@
                   "properties": {
                     "records": {
                       "type": "array",
-                      "items": { "type": "object", "properties": {}, "additionalProperties": true }
+                      "items": { "type": "object", "additionalProperties": true }
                     },
-                    "nextToken": { "type": ["string","null"] }
+                    "nextToken": { "type": ["string", "null"] }
                   },
                   "required": ["records"]
                 }
