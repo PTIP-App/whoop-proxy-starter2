@@ -1,7 +1,9 @@
 {
   "name": "whoop-proxy-starter",
-  "version": "1.0.0",
+  "version": "2.0.0",
+  "private": true,
   "type": "module",
+  "engines": { "node": ">=18" },
   "scripts": {
     "start": "node server.js"
   },
@@ -9,6 +11,5 @@
     "express": "^4.19.2",
     "express-session": "^1.17.3",
     "node-fetch": "^3.3.2"
-    "ioredis": "^5.4.1"
   }
 }
