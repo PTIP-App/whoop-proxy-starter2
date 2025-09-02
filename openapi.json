@@ -1,27 +1,93 @@
 {
-  "openapi": "3.0.1",
-  "info": { "title": "My WHOOP Proxy", "version": "1.0.0" },
-  "servers": [
-    { "url": "https://whoop-proxy.onrender.com/" }
-  ],
+  "openapi": "3.1.0",
+  "info": { "title": "My WHOOP Proxy", "version": "2.0.0" },
+  "servers": [{ "url": "https://whoop-proxy.onrender.com" }],
   "paths": {
-    "/me/summary": {
-      "get": {
-        "operationId": "getSummary",
-        "description": "30-day summary of profile, body, cycles, recovery, sleep.",
-        "responses": {
-          "200": { "description": "OK" }
-        }
-      }
-    },
     "/today/recovery": {
       "get": {
         "operationId": "getTodayRecovery",
         "description": "Latest recovery snapshot for today.",
         "responses": {
-          "200": { "description": "OK" }
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object" } } } }
         }
       }
-    }
-  }
-}
+    },
+    "/me/summary": {
+      "get": {
+        "operationId": "getSummary30d",
+        "description": "30-day summary (can be large; prefer /list/* for GPT).",
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object" } } } }
+        }
+      }
+    },
+    "/profile/basic": {
+      "get": {
+        "operationId": "getProfileBasic",
+        "description": "User basic profile.",
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object" } } } }
+        }
+      }
+    },
+    "/measurement/body": {
+      "get": {
+        "operationId": "getBodyMeasurement",
+        "description": "User body measurements.",
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object" } } } }
+        }
+      }
+    },
+    "/list/recovery": {
+      "get": {
+        "operationId": "listRecovery",
+        "description": "Paginated recovery records within a date range. Use nextToken to continue.",
+        "parameters": [
+          { "name": "start", "in": "query", "required": true, "schema": { "type": "string", "format": "date-time" } },
+          { "name": "end", "in": "query", "required": true, "schema": { "type": "string", "format": "date-time" } },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } },
+          { "name": "nextToken", "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "trim", "in": "query", "required": false, "schema": { "type": "string", "enum": ["true", "false"], "default": "true" } }
+        ],
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object", "properties": { "records": { "type": "array", "items": { "type": "object" } }, "nextToken": { "type": ["string", "null"] } } } } } }
+        }
+      }
+    },
+    "/list/sleep": {
+      "get": {
+        "operationId": "listSleep",
+        "description": "Paginated sleep records within a date range. Use nextToken to continue.",
+        "parameters": [
+          { "name": "start", "in": "query", "required": true, "schema": { "type": "string", "format": "date-time" } },
+          { "name": "end", "in": "query", "required": true, "schema": { "type": "string", "format": "date-time" } },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } },
+          { "name": "nextToken", "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "trim", "in": "query", "required": false, "schema": { "type": "string", "enum": ["true", "false"], "default": "true" } }
+        ],
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object", "properties": { "records": { "type": "array", "items": { "type": "object" } }, "nextToken": { "type": ["string", "null"] } } } } } }
+        }
+      }
+    },
+    "/list/workout": {
+      "get": {
+        "operationId": "listWorkout",
+        "description": "Paginated workout records within a date range. Use nextToken to continue.",
+        "parameters": [
+          { "name": "start", "in": "query", "required": true, "schema": { "type": "string", "format": "date-time" } },
+          { "name": "end", "in": "query", "required": true, "schema": { "type": "string", "format": "date-time" } },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } },
+          { "name": "nextToken", "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "trim", "in": "query", "required": false, "schema": { "type": "string", "enum": ["true", "false"], "default": "true" } }
+        ],
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object", "properties": { "records": { "type": "array", "items": { "type": "object" } }, "nextToken": { "type": ["string", "null"] } } } } } }
+        }
+      }
+    },
+    "/list/cycle": {
+      "get": {
+        "operationId": "listCycle",
+        "description": "Paginated cycle records within a date range.
