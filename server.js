@@ -76,8 +76,8 @@ app.get("/oauth/callback", async (req, res) => {
     return res.status(500).send(`Token exchange failed: ${r.status} ${text}`);
   }
   const tokens = await r.json();
-  req.session.tokens = tokens; // { access_token, refresh_token, expires_in, ... }
-  res.send("✅ WHOOP connected. You can close this tab.");
+  req.session.tokens = tokens;
+await saveTokens(tokens);
 });
 
 async function refresh(req) {
@@ -97,18 +97,38 @@ async function refresh(req) {
 }
 
 async function whoopGet(req, url) {
-  const token = req.session?.tokens?.access_token;
-  if (!token) throw new Error("Not connected to WHOOP yet. Visit /connect/whoop");
-  let r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (r.status === 401) { // try refresh once
-    const newToken = await refresh(req);
-    r = await fetch(url, { headers: { Authorization: `Bearer ${newToken}` } });
+  let tokens = req.session?.tokens || await loadTokens();
+  if (!tokens?.access_token) throw new Error("Not connected to WHOOP yet. Visit /connect/whoop");
+
+  const doFetch = async (accessToken) =>
+    fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+
+  let r = await doFetch(tokens.access_token);
+
+  if (r.status === 401) {
+    if (!tokens.refresh_token) throw new Error("Missing refresh token");
+    const body = new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: tokens.refresh_token,
+      client_id: WHOOP_CLIENT_ID,
+      client_secret: WHOOP_CLIENT_SECRET,
+      scope: "offline"
+    });
+    const rr = await fetch(WHOOP_TOKEN, { method: "POST", body });
+    if (!rr.ok) throw new Error(`Refresh failed ${rr.status}`);
+    const newTokens = await rr.json();
+    if (req.session) req.session.tokens = newTokens;
+    await saveTokens(newTokens);
+    r = await doFetch(newTokens.access_token);
   }
+
   if (!r.ok) {
     const text = await r.text();
     throw new Error(`WHOOP error ${r.status}: ${text}`);
   }
   return r.json();
+}
+
 }
 
 // Simple endpoints for ChatGPT
