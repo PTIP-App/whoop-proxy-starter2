@@ -40,6 +40,10 @@ let globalTokens = null;
 // App setup
 const app = express();
 app.use(express.json());
+app.use((req, _res, next) => {
+  console.log("REQ", req.method, req.url);
+  next();
+});
 app.use(
   session({
     secret: SESSION_SECRET,
