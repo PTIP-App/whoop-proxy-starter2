@@ -1,5 +1,6 @@
 // server.js — WHOOP proxy (single user, beginner-friendly)
 // Node 18+ (ESM). Express + node-fetch + express-session.
+// Auto-paginates so WHOOP's limit<=25 never blocks you.
 
 import express from "express";
 import fetch from "node-fetch";
@@ -27,6 +28,9 @@ const WHOOP_TOKEN = "https://api.prod.whoop.com/oauth/oauth2/token";
 // Single-user token fallback (so GPT calls work without cookies).
 // NOTE: tokens reset on restart (okay for starter). For persistence, add Redis later.
 let globalTokens = null;
+
+// WHOOP hard cap per request; do not exceed this when calling WHOOP.
+const WHOOP_PAGE_MAX = 25;
 
 // ───────────────────────────────────────────────────────────────────────────────
 // App setup
@@ -61,7 +65,6 @@ app.get("/", (_req, res) => {
 
 // Serve OpenAPI (make sure openapi.json exists in repo root)
 app.get("/openapi.json", (_req, res) => {
-  // sendFile without __dirname (no ESM path fuss): stream from FS via dynamic import
   import("node:fs").then(fs => {
     fs.readFile("openapi.json", "utf8", (err, text) => {
       if (err) return res.status(404).send("openapi.json not found");
@@ -166,17 +169,13 @@ async function whoopGet(req, url) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────────
-// Date normalizers (DURABLE FIX): accept YYYY, YYYY-MM, YYYY-MM-DD, or full ISO.
+// Date normalizers (accept YYYY / YYYY-MM / YYYY-MM-DD / full ISO)
 
 function normalizeStartISO(s) {
   if (!s) return s;
-  // YYYY
-  if (/^\d{4}$/.test(s)) return `${s}-01-01T00:00:00.000Z`;
-  // YYYY-MM
-  if (/^\d{4}-\d{2}$/.test(s)) return `${s}-01T00:00:00.000Z`;
-  // YYYY-MM-DD
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T00:00:00.000Z`;
-  // Otherwise try Date parse
+  if (/^\d{4}$/.test(s)) return `${s}-01-01T00:00:00.000Z`;          // YYYY
+  if (/^\d{4}-\d{2}$/.test(s)) return `${s}-01T00:00:00.000Z`;       // YYYY-MM
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T00:00:00.000Z`;    // YYYY-MM-DD
   const d = new Date(s);
   if (isNaN(d)) throw new Error("Invalid start date");
   return d.toISOString();
@@ -184,28 +183,24 @@ function normalizeStartISO(s) {
 
 function normalizeEndISO(s) {
   if (!s) return s;
-  // YYYY → end of that year
-  if (/^\d{4}$/.test(s)) {
+  if (/^\d{4}$/.test(s)) {                                          // YYYY → end of year
     const y = Number(s);
     const next = new Date(Date.UTC(y + 1, 0, 1));
     return new Date(next.getTime() - 1).toISOString();
   }
-  // YYYY-MM → end of that month
-  if (/^\d{4}-\d{2}$/.test(s)) {
-    const [y, m] = s.split("-").map(Number); // m is 1-12
-    const next = new Date(Date.UTC(y, m, 1)); // next month (month is 0-based)
+  if (/^\d{4}-\d{2}$/.test(s)) {                                    // YYYY-MM → end of month
+    const [y, m] = s.split("-").map(Number);
+    const next = new Date(Date.UTC(y, m, 1)); // next month
     return new Date(next.getTime() - 1).toISOString();
   }
-  // YYYY-MM-DD → end of that day
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T23:59:59.999Z`;
-  // Otherwise try Date parse
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T23:59:59.999Z`;   // end of day
   const d = new Date(s);
   if (isNaN(d)) throw new Error("Invalid end date");
   return d.toISOString();
 }
 
 // ───────────────────────────────────────────────────────────────────────────────
-// Small JSON helpers
+// Helpers for paging & trimming
 
 function rangeUrl(base, { start, end, limit, nextToken }) {
   const p = new URLSearchParams();
@@ -248,6 +243,7 @@ function maybeTrim(arr, trim) {
   return arr.map(trimRecord);
 }
 
+// Fetch one WHOOP page (records + nextToken)
 async function fetchPage(req, base, args) {
   const url = rangeUrl(base, args);
   const page = await whoopGet(req, url);
@@ -255,6 +251,23 @@ async function fetchPage(req, base, args) {
     records: Array.isArray(page.records) ? page.records : [],
     nextToken: page.nextToken || page.next_token || null
   };
+}
+
+// Auto-paginate until we collect desiredCount (or all if desiredCount===Infinity)
+async function fetchAuto(req, base, { start, end, desiredCount, perPage, firstNextToken }) {
+  let nextToken = firstNextToken || null;
+  const out = [];
+  perPage = Math.min(WHOOP_PAGE_MAX, Math.max(1, Math.floor(perPage || WHOOP_PAGE_MAX)));
+
+  while (out.length < desiredCount && (out.length === 0 || nextToken !== null)) {
+    const { records, nextToken: nt } = await fetchPage(req, base, {
+      start, end, limit: perPage, nextToken
+    });
+    out.push(...records);
+    nextToken = nt;
+    if (!nextToken) break;
+  }
+  return { records: out.slice(0, desiredCount), nextToken };
 }
 
 // ───────────────────────────────────────────────────────────────────────────────
@@ -295,68 +308,71 @@ app.get("/me/summary", async (req, res) => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────────
-// Paginated list endpoints — now accept simple dates (YYYY / YYYY-MM / YYYY-MM-DD)
-// Use limit (default 50) and nextToken to paginate. trim=true keeps payloads tiny.
+// Paginated list endpoints — now auto-paginate.
+// You can pass:
+//   - limit=N  (N>25 means "return up to N", auto-paging in 25s)
+//   - all=true (fetch everything in range; be careful with very large ranges)
+//   - trim=true/false (default true)
 
-app.get("/list/recovery", async (req, res) => {
+async function handleList(req, res, base) {
   try {
-    const { start, end, limit = 50, nextToken, trim = "true" } = req.query;
+    const { start, end, limit, nextToken, trim = "true", all } = req.query;
     if (!start || !end) return res.status(400).json({ error: "Provide start & end (dates or ISO datetimes)" });
+
     const startISO = normalizeStartISO(start);
     const endISO = normalizeEndISO(end);
-    const base = "https://api.prod.whoop.com/developer/v2/recovery";
-    const page = await fetchPage(req, base, { start: startISO, end: endISO, limit, nextToken });
-    page.records = maybeTrim(page.records, trim === "true");
-    res.json(page);
+    const wantAll = String(all).toLowerCase() === "true";
+
+    // Desired total to return:
+    let desired = Infinity;
+    if (!wantAll) {
+      const requested = Number(limit);
+      desired = Number.isFinite(requested) && requested > 0 ? Math.floor(requested) : WHOOP_PAGE_MAX;
+    }
+
+    // Per-page to WHOOP (NEVER above 25)
+    const perPage = Math.min(WHOOP_PAGE_MAX, Number.isFinite(Number(limit)) ? Math.max(1, Math.min(WHOOP_PAGE_MAX, Math.floor(Number(limit)))) : WHOOP_PAGE_MAX);
+
+    // If desired <= 25 and no pagination requested, fetch once for speed:
+    if (!wantAll && desired <= WHOOP_PAGE_MAX && !nextToken) {
+      const page = await fetchPage(req, base, { start: startISO, end: endISO, limit: Math.min(desired, WHOOP_PAGE_MAX) });
+      page.records = maybeTrim(page.records, trim === "true");
+      return res.json(page);
+    }
+
+    // Otherwise auto-paginate to meet desired (or all)
+    const { records, nextToken: finalToken } = await fetchAuto(req, base, {
+      start: startISO,
+      end: endISO,
+      desiredCount: wantAll ? Infinity : desired,
+      perPage,
+      firstNextToken: nextToken || null
+    });
+
+    res.json({
+      records: maybeTrim(records, trim === "true"),
+      nextToken: finalToken // null if fully exhausted
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
-});
+}
 
-app.get("/list/sleep", async (req, res) => {
-  try {
-    const { start, end, limit = 50, nextToken, trim = "true" } = req.query;
-    if (!start || !end) return res.status(400).json({ error: "Provide start & end (dates or ISO datetimes)" });
-    const startISO = normalizeStartISO(start);
-    const endISO = normalizeEndISO(end);
-    const base = "https://api.prod.whoop.com/developer/v2/activity/sleep";
-    const page = await fetchPage(req, base, { start: startISO, end: endISO, limit, nextToken });
-    page.records = maybeTrim(page.records, trim === "true");
-    res.json(page);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+app.get("/list/recovery", (req, res) =>
+  handleList(req, res, "https://api.prod.whoop.com/developer/v2/recovery")
+);
 
-app.get("/list/workout", async (req, res) => {
-  try {
-    const { start, end, limit = 50, nextToken, trim = "true" } = req.query;
-    if (!start || !end) return res.status(400).json({ error: "Provide start & end (dates or ISO datetimes)" });
-    const startISO = normalizeStartISO(start);
-    const endISO = normalizeEndISO(end);
-    const base = "https://api.prod.whoop.com/developer/v2/activity/workout";
-    const page = await fetchPage(req, base, { start: startISO, end: endISO, limit, nextToken });
-    page.records = maybeTrim(page.records, trim === "true");
-    res.json(page);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+app.get("/list/sleep", (req, res) =>
+  handleList(req, res, "https://api.prod.whoop.com/developer/v2/activity/sleep")
+);
 
-app.get("/list/cycle", async (req, res) => {
-  try {
-    const { start, end, limit = 50, nextToken, trim = "true" } = req.query;
-    if (!start || !end) return res.status(400).json({ error: "Provide start & end (dates or ISO datetimes)" });
-    const startISO = normalizeStartISO(start);
-    const endISO = normalizeEndISO(end);
-    const base = "https://api.prod.whoop.com/developer/v2/cycle";
-    const page = await fetchPage(req, base, { start: startISO, end: endISO, limit, nextToken });
-    page.records = maybeTrim(page.records, trim === "true");
-    res.json(page);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+app.get("/list/workout", (req, res) =>
+  handleList(req, res, "https://api.prod.whoop.com/developer/v2/activity/workout")
+);
+
+app.get("/list/cycle", (req, res) =>
+  handleList(req, res, "https://api.prod.whoop.com/developer/v2/cycle")
+);
 
 // Profile + body (small)
 app.get("/profile/basic", async (_req, res) => {
