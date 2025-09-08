@@ -5,6 +5,7 @@
 import express from "express";
 import fetch from "node-fetch";
 import session from "express-session";
+import https from "node:https";
 
 // ───────────────────────────────────────────────────────────────────────────────
 // ENV (Render → Settings → Environment Variables)
@@ -31,6 +32,9 @@ let globalTokens = null;
 
 // WHOOP hard cap per request; do not exceed this when calling WHOOP.
 const WHOOP_PAGE_MAX = 25;
+
+// Reuse a single HTTPS agent to keep connections alive
+const keepAliveAgent = new https.Agent({ keepAlive: true });
 
 // ───────────────────────────────────────────────────────────────────────────────
 // App setup
@@ -150,15 +154,33 @@ async function whoopGet(req, url) {
   }
 
   const doFetch = (accessToken) =>
-    fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      agent: keepAliveAgent
+    });
 
-  let r = await doFetch(tokens.access_token);
+  let r;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      r = await doFetch(tokens.access_token);
 
-  if (r.status === 401) {
-    const newTokens = await refreshTokens(tokens);
-    if (req.session) req.session.tokens = newTokens;
-    globalTokens = newTokens;
-    r = await doFetch(newTokens.access_token);
+      if (r.status === 401) {
+        const newTokens = await refreshTokens(tokens);
+        if (req.session) req.session.tokens = newTokens;
+        globalTokens = newTokens;
+        tokens = newTokens;
+        r = await doFetch(tokens.access_token);
+      }
+
+      if (r.status >= 500 && attempt < 2) {
+        await new Promise(res => setTimeout(res, 300 * (attempt + 1)));
+        continue;
+      }
+      break;
+    } catch (err) {
+      if (attempt === 2) throw err;
+      await new Promise(res => setTimeout(res, 300 * (attempt + 1)));
+    }
   }
 
   if (!r.ok) {

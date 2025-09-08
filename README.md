@@ -2,6 +2,8 @@
 
 A tiny Node.js server that connects to your WHOOP account and exposes simple endpoints your custom ChatGPT can call via Actions.
 
+The proxy keeps a persistent connection to the WHOOP API and retries transient failures to pull data quickly when requested.
+
 ## Environment Variables
 - `WHOOP_CLIENT_ID` – from WHOOP developer portal
 - `WHOOP_CLIENT_SECRET` – from WHOOP developer portal
